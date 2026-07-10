@@ -105,7 +105,7 @@ export default function Home() {
       <div className="wood-edge" />
       <Opponent player={game.players[1]} className="lena" active={current?.id === game.players[1].id} throwing={throwSource === "lena"} />
       <Opponent player={game.players[2]} className="milo" active={current?.id === game.players[2].id} throwing={throwSource === "milo"} />
-      <div className={`direction-indicator ${game.direction === -1 ? "reverse" : ""}`} aria-label={game.direction === 1 ? "Clockwise play" : "Counter-clockwise play"}><span>↻</span><small>{game.direction === 1 ? "Clockwise" : "Reverse"}</small></div>
+      <div className={`direction-indicator ${game.direction === 1 ? "reverse" : ""}`} aria-label={game.direction === -1 ? "Clockwise play" : "Counter-clockwise play"}><span>↻</span><small>{game.direction === -1 ? "Clockwise" : "Counter-clockwise"}</small></div>
       <div className="center-zone">
         <button className="deck-card" onClick={draw} disabled={!isYourTurn || !!game.awaitingColorFor || game.gameStatus === "finished"} aria-label={game.pendingDrawCount ? `Accept ${game.pendingDrawCount} cards` : "Draw a card"}><img src="/cards/card.png" alt="UNO draw pile" /><em>{game.drawPile.length}</em></button>
         <div className={`discard-zone ${draggedCardId ? "drop-ready" : ""}`} onDragOver={event => event.preventDefault()} onDrop={dropCard} aria-label="Drop a card here to play">{game.discardPile.slice(-3, -1).map((card, index) => <CardFace key={card.id} card={card} className={`discard-ghost ghost-${index}`} />)}<CardFace key={top.id} card={top} className={`discard-card ${throwSource ? `from-${throwSource}` : ""}`} /><span className={`active-color ${game.activeColor}`}>{game.activeColor}</span></div>
