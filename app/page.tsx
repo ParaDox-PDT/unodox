@@ -88,7 +88,7 @@ export default function Home() {
       <div className="opponent lena"><div className="player-label"><b>Lena</b><small>{left} cards</small></div><div className="card-stack" aria-label={`Lena has ${left} cards`}>{Array.from({ length: Math.min(left, 7) }).map((_, i) => <i key={i} />)}</div></div>
       <div className="opponent milo"><div className="player-label"><b>Milo</b><small>{right} cards</small></div><div className="card-stack" aria-label={`Milo has ${right} cards`}>{Array.from({ length: Math.min(right, 7) }).map((_, i) => <i key={i} />)}</div></div>
       <div className="status"><span className={`turn-dot ${turn}`} />{message}</div>
-      <div className="center-pile"><button className="deck-card" onClick={draw} aria-label="Draw a card"><span>UNO</span><em>{deck.length}</em></button><CardFace card={top} active={active} /></div>
+      <div className="center-pile"><button className="deck-card" onClick={draw} aria-label="Draw a card"><img src="/cards/card.png" alt="UNO draw pile" /><em>{deck.length}</em></button><CardFace card={top} active={active} /></div>
       <div className="your-area"><div className="player-label"><b>You</b><small>{hand.length} cards</small></div><div className="hand">{hand.map(card => <button key={card.id} className={`hand-card ${canPlay(card, top, active) && turn === "you" ? "playable" : ""}`} onClick={() => play(card)} aria-label={`Play ${card.color} ${names[card.value]}`}><CardFace card={card} active={active} /></button>)}</div></div>
       {winner && <div className="winner"><strong>{winner} wins!</strong><span>{winner === "You" ? "That was a clean finish." : "Shuffle up and take another shot."}</span><button onClick={reset}>Play again</button></div>}
       {colorPick && <div className="color-picker"><strong>Choose a color</strong><div>{colors.map(color => <button key={color} className={color} onClick={() => { const card = colorPick; setColorPick(null); afterPlay(card, "you", color); }}>{color}</button>)}</div></div>}
@@ -96,4 +96,7 @@ export default function Home() {
   </main>;
 }
 
-function CardFace({ card, active }: { card: Card; active: Color }) { const hue = card.color === "wild" ? active : card.color; return <span className={`card-face ${card.color} ${hue}`}><i>{symbols[card.value]}</i><b>{symbols[card.value]}</b><i>{symbols[card.value]}</i></span>; }
+function CardFace({ card }: { card: Card; active: Color }) {
+  const file = card.color === "wild" ? (card.value === "wild4" ? "card_wild_draw4_1.png" : "card_wild_1.png") : `card_${card.value}_${card.color}.png`;
+  return <img className="card-image" src={`/cards/${file}`} alt={`${card.color} ${names[card.value]} card`} />;
+}
