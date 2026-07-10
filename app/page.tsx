@@ -1,102 +1,64 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { acceptPendingDraw, canPlayCard, CardColor, CardValue, COLORS, createGame, drawCard, GameState, getPlayableCards, playCard, playCards, selectWildColor, UnoCard } from "../lib/game/engine";
 
-type Color = "red" | "yellow" | "green" | "blue" | "wild";
-type Value = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "skip" | "reverse" | "draw2" | "wild" | "wild4";
-type Card = { id: string; color: Color; value: Value };
-
-const colors: Color[] = ["red", "yellow", "green", "blue"];
-const symbols: Record<Value, string> = { skip: "⊘", reverse: "↻", draw2: "+2", wild: "★", wild4: "+4", "0": "0", "1": "1", "2": "2", "3": "3", "4": "4", "5": "5", "6": "6", "7": "7", "8": "8", "9": "9" };
-const names: Record<Value, string> = { skip: "Skip", reverse: "Reverse", draw2: "Draw two", wild: "Wild", wild4: "Wild draw four", "0": "0", "1": "1", "2": "2", "3": "3", "4": "4", "5": "5", "6": "6", "7": "7", "8": "8", "9": "9" };
-
-function shuffle<T>(items: T[]) { return [...items].sort(() => Math.random() - 0.5); }
-function createDeck(): Card[] {
-  const cards: Card[] = [];
-  let id = 0;
-  for (const color of colors) {
-    cards.push({ id: `${color}-${id++}`, color, value: "0" });
-    for (const value of ["1", "2", "3", "4", "5", "6", "7", "8", "9", "skip", "reverse", "draw2"] as Value[]) {
-      cards.push({ id: `${color}-${id++}`, color, value });
-      cards.push({ id: `${color}-${id++}`, color, value });
-    }
-  }
-  for (let i = 0; i < 4; i++) cards.push({ id: `wild-${id++}`, color: "wild", value: "wild" }, { id: `wild4-${id++}`, color: "wild", value: "wild4" });
-  return shuffle(cards);
-}
-function canPlay(card: Card, top: Card, active: Color) { return card.color === "wild" || card.color === active || card.value === top.value; }
-function newGame() {
-  let deck = createDeck();
-  let first = deck.pop()!;
-  while (first.color === "wild") { deck.unshift(first); deck = shuffle(deck); first = deck.pop()!; }
-  return { deck, top: first, hand: deck.splice(-7), left: 7, right: 7, active: first.color as Color };
-}
+const names: Record<CardValue, string> = { skip: "Skip", reverse: "Reverse", draw2: "Draw two", wild: "Wild", wild4: "Wild draw four", "0": "0", "1": "1", "2": "2", "3": "3", "4": "4", "5": "5", "6": "6", "7": "7", "8": "8", "9": "9" };
+const numeric = (card: UnoCard) => /^\d$/.test(card.value);
+const cardImage = (card: UnoCard) => card.color === null ? (card.value === "wild4" ? "card_wild_draw4_1.png" : "card_wild_1.png") : `card_${card.value}_${card.color}.png`;
 
 export default function Home() {
-  const initial = useMemo(newGame, []);
-  const [deck, setDeck] = useState<Card[]>(initial.deck);
-  const [top, setTop] = useState<Card>(initial.top);
-  const [hand, setHand] = useState<Card[]>(initial.hand);
-  const [left, setLeft] = useState(initial.left);
-  const [right, setRight] = useState(initial.right);
-  const [active, setActive] = useState<Color>(initial.active);
-  const [turn, setTurn] = useState<"you" | "lena" | "milo">("you");
+  const initial = useMemo(() => createGame(), []);
+  const [game, setGame] = useState<GameState>(initial);
   const [message, setMessage] = useState("Your turn — match color, number, or symbol.");
-  const [winner, setWinner] = useState<string | null>(null);
-  const [colorPick, setColorPick] = useState<Card | null>(null);
+  const you = game.players[0];
+  const current = game.players[game.currentPlayerIndex];
+  const isYourTurn = current.id === you.id && game.gameStatus === "playing";
+  const selected = game.selectedComboCards;
 
-  const reset = () => { const game = newGame(); setDeck(game.deck); setTop(game.top); setHand(game.hand); setLeft(game.left); setRight(game.right); setActive(game.active); setTurn("you"); setWinner(null); setColorPick(null); setMessage("Fresh deck. Your turn!"); };
-  const takeCards = (count: number) => { const drawn = deck.slice(-count); setDeck(d => d.slice(0, -drawn.length)); return drawn; };
-  const afterPlay = (card: Card, player: "you" | "lena" | "milo", chosen?: Color) => {
-    setTop(card); setActive(chosen ?? (card.color === "wild" ? active : card.color));
-    if (player === "you" && hand.length === 1) { setWinner("You"); setMessage("UNO! You win the round."); return; }
-    const next = player === "you" ? "lena" : player === "lena" ? "milo" : "you";
-    if (card.value === "skip" || card.value === "reverse") { setTurn(player === "you" ? "milo" : "you"); setMessage("Skip! Next player loses a turn."); }
-    else if (card.value === "draw2" || card.value === "wild4") { const amount = card.value === "draw2" ? 2 : 4; if (next === "you") setHand(h => [...h, ...takeCards(amount)]); else if (next === "lena") setLeft(n => n + amount); else setRight(n => n + amount); setTurn(player === "you" ? "milo" : "you"); setMessage(`Draw ${amount}!`); }
-    else { setTurn(next); setMessage(next === "you" ? "Your turn." : `${next === "lena" ? "Lena" : "Milo"} is thinking…`); }
+  const reset = () => { setGame(createGame()); setMessage("Fresh deck. Your turn!"); };
+  const update = (action: (state: GameState) => GameState, success: string) => setGame(previous => { try { const next = action(previous); setMessage(next.gameStatus === "finished" ? `${next.players.find(p => p.id === next.winnerId)?.name} wins the round.` : success); return next; } catch (error) { setMessage(error instanceof Error ? error.message : "That move is not available."); return previous; } });
+  const toggleCard = (card: UnoCard) => {
+    if (!isYourTurn || game.awaitingColorFor || game.pendingDrawCount) return;
+    if (!numeric(card)) { if (!selected.length) update(state => playCard(state, you.id, card.id), `${names[card.value]} played.`); return; }
+    if (!selected.length && !canPlayCard(card, game)) return;
+    if (selected.length && (!numeric(card) || game.players[0].hand.find(item => item.id === selected[0])?.value !== card.value)) return;
+    setGame(state => ({ ...state, selectedComboCards: selected.includes(card.id) ? selected.filter(id => id !== card.id) : [...selected, card.id] }));
   };
-  const play = (card: Card) => {
-    if (turn !== "you" || winner || !canPlay(card, top, active)) return;
-    setHand(h => h.filter(c => c.id !== card.id));
-    if (card.color === "wild") { setColorPick(card); return; }
-    afterPlay(card, "you");
-  };
-  const draw = () => {
-    if (turn !== "you" || winner || !deck.length) return;
-    const drawn = takeCards(1); setHand(h => [...h, ...drawn]); setTurn("lena"); setMessage("You drew a card. Lena is thinking…");
-  };
+  const playSelected = () => update(state => playCards(state, you.id, state.selectedComboCards), `${selected.length} cards played.`);
+  const draw = () => update(state => game.pendingDrawCount ? acceptPendingDraw(state, you.id) : drawCard(state, you.id), game.pendingDrawCount ? "You accepted the draw stack." : "You drew a card.");
+  const chooseColor = (color: CardColor) => update(state => selectWildColor(state, you.id, color), `Active color is now ${color}.`);
+
   useEffect(() => {
-    if (turn === "you" || winner) return;
-    const timer = setTimeout(() => {
-      const count = turn === "lena" ? left : right;
-      const playable = createDeck().find(c => false); // keeps selection deterministic below
-      void playable;
-      const botCards = Array.from({ length: count }, (_, index) => ({ id: `${turn}-${index}`, color: colors[index % 4], value: (["1", "4", "7", "skip", "reverse", "draw2"] as Value[])[index % 6] }));
-      const choice = botCards.find(card => canPlay(card, top, active));
-      if (!choice) { if (turn === "lena") setLeft(n => n + 1); else setRight(n => n + 1); setTurn(turn === "lena" ? "milo" : "you"); setMessage(`${turn === "lena" ? "Lena" : "Milo"} drew a card.`); return; }
-      if (turn === "lena") setLeft(n => Math.max(0, n - 1)); else setRight(n => Math.max(0, n - 1));
-      if (count === 1) { setWinner(turn === "lena" ? "Lena" : "Milo"); setMessage(`${turn === "lena" ? "Lena" : "Milo"} wins the round.`); return; }
-      afterPlay(choice, turn, choice.color === "wild" ? "red" : undefined);
+    if (isYourTurn || game.gameStatus === "finished" || game.awaitingColorFor) return;
+    const timer = window.setTimeout(() => {
+      const bot = game.players[game.currentPlayerIndex];
+      const playable = getPlayableCards(game, bot.id);
+      const choice = playable[0];
+      try {
+        let next = choice ? playCard(game, bot.id, choice.id) : game.pendingDrawCount ? acceptPendingDraw(game, bot.id) : drawCard(game, bot.id);
+        if (next.awaitingColorFor === bot.id) next = selectWildColor(next, bot.id, COLORS[Math.floor(Math.random() * COLORS.length)]);
+        setGame(next); setMessage(next.gameStatus === "finished" ? `${bot.name} wins the round.` : choice ? `${bot.name} played ${names[choice.value]}.` : `${bot.name} drew a card.`);
+      } catch { setMessage(`${bot.name} could not make a move.`); }
     }, 850);
-    return () => clearTimeout(timer);
-  }, [turn, winner, top, active, left, right]);
+    return () => window.clearTimeout(timer);
+  }, [game, isYourTurn]);
 
+  const colorPick = game.awaitingColorFor === you.id;
   return <main className="game-shell">
     <header><div className="brand"><span>UNO</span> TABLE</div><p>First player to empty their hand wins.</p><button className="new-game" onClick={reset}>New game</button></header>
     <section className="game-board" aria-label="UNO card game">
       <div className="wood-edge" />
-      <div className="opponent lena"><div className="player-label"><b>Lena</b><small>{left} cards</small></div><div className="card-stack" aria-label={`Lena has ${left} cards`}>{Array.from({ length: Math.min(left, 7) }).map((_, i) => <i key={i} />)}</div></div>
-      <div className="opponent milo"><div className="player-label"><b>Milo</b><small>{right} cards</small></div><div className="card-stack" aria-label={`Milo has ${right} cards`}>{Array.from({ length: Math.min(right, 7) }).map((_, i) => <i key={i} />)}</div></div>
-      <div className="status"><span className={`turn-dot ${turn}`} />{message}</div>
-      <div className="center-pile"><button className="deck-card" onClick={draw} aria-label="Draw a card"><img src="/cards/card.png" alt="UNO draw pile" /><em>{deck.length}</em></button><CardFace card={top} active={active} /></div>
-      <div className="your-area"><div className="player-label"><b>You</b><small>{hand.length} cards</small></div><div className="hand">{hand.map(card => <button key={card.id} className={`hand-card ${canPlay(card, top, active) && turn === "you" ? "playable" : ""}`} onClick={() => play(card)} aria-label={`Play ${card.color} ${names[card.value]}`}><CardFace card={card} active={active} /></button>)}</div></div>
-      {winner && <div className="winner"><strong>{winner} wins!</strong><span>{winner === "You" ? "That was a clean finish." : "Shuffle up and take another shot."}</span><button onClick={reset}>Play again</button></div>}
-      {colorPick && <div className="color-picker"><strong>Choose a color</strong><div>{colors.map(color => <button key={color} className={color} onClick={() => { const card = colorPick; setColorPick(null); afterPlay(card, "you", color); }}>{color}</button>)}</div></div>}
+      <Opponent player={game.players[1]} className="lena" />
+      <Opponent player={game.players[2]} className="milo" />
+      <div className="status"><span className={`turn-dot ${isYourTurn ? "you" : ""}`} />{message}{game.pendingDrawCount > 0 && <b className="draw-counter"> +{game.pendingDrawCount}</b>}</div>
+      <div className="center-pile"><button className="deck-card" onClick={draw} disabled={!isYourTurn || !!game.awaitingColorFor || game.gameStatus === "finished"} aria-label={game.pendingDrawCount ? `Accept ${game.pendingDrawCount} cards` : "Draw a card"}><img src="/cards/card.png" alt="UNO draw pile" /><em>{game.drawPile.length}</em></button><CardFace card={game.discardPile.at(-1)!} /></div>
+      <div className="your-area"><div className="player-label"><b>You</b><small>{you.hand.length} cards</small></div><div className="hand">{you.hand.map(card => { const selectedCard = selected.includes(card.id); const allowed = selectedCard || (!selected.length ? canPlayCard(card, game) : numeric(card) && numeric(you.hand.find(item => item.id === selected[0])!) && card.value === you.hand.find(item => item.id === selected[0])!.value); return <button key={card.id} className={`hand-card ${allowed && isYourTurn ? "playable" : ""} ${selectedCard ? "selected" : ""}`} disabled={!isYourTurn || !allowed || !!game.awaitingColorFor || game.gameStatus === "finished"} onClick={() => toggleCard(card)} aria-label={`Play ${card.color ?? "wild"} ${names[card.value]}`}><CardFace card={card} /></button>; })}</div>{selected.length > 0 && <div className="combo-actions"><button onClick={playSelected}>Play {selected.length} card{selected.length > 1 ? "s" : ""}</button><button onClick={() => setGame(state => ({ ...state, selectedComboCards: [] }))}>Cancel</button></div>}</div>
+      {game.gameStatus === "finished" && <div className="winner"><strong>{game.players.find(player => player.id === game.winnerId)?.name} wins!</strong><span>{game.winnerId === you.id ? "That was a clean finish." : "Shuffle up and take another shot."}</span><button onClick={reset}>Play again</button></div>}
+      {colorPick && <div className="color-picker"><strong>Choose a color</strong><div>{COLORS.map(color => <button key={color} className={color} onClick={() => chooseColor(color)}>{color}</button>)}</div></div>}
     </section>
   </main>;
 }
 
-function CardFace({ card }: { card: Card; active: Color }) {
-  const file = card.color === "wild" ? (card.value === "wild4" ? "card_wild_draw4_1.png" : "card_wild_1.png") : `card_${card.value}_${card.color}.png`;
-  return <img className="card-image" src={`/cards/${file}`} alt={`${card.color} ${names[card.value]} card`} />;
-}
+function Opponent({ player, className }: { player: GameState["players"][number]; className: string }) { return <div className={`opponent ${className}`}><div className="player-label"><b>{player.name}</b><small>{player.hand.length} cards</small></div><div className="card-stack" aria-label={`${player.name} has ${player.hand.length} cards`}>{Array.from({ length: Math.min(player.hand.length, 7) }).map((_, i) => <i key={i}><img src="/cards/card.png" alt="" /></i>)}</div></div>; }
+function CardFace({ card }: { card: UnoCard }) { return <img className="card-image" src={`/cards/${cardImage(card)}`} alt={`${card.color ?? "wild"} ${names[card.value]} card`} />; }
