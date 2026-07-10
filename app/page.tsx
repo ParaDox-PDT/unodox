@@ -37,7 +37,8 @@ export default function Home() {
     if (!game || !you) return;
     const card = you.hand.find(item => item.id === cardId);
     if (!card) return;
-    if (/^\d$/.test(card.value) && !game.pendingDrawCount) {
+    const matchingNumberCards = you.hand.filter(item => /^\d$/.test(item.value) && item.value === card.value);
+    if (/^\d$/.test(card.value) && matchingNumberCards.length > 1 && !game.pendingDrawCount) {
       const first = you.hand.find(item => item.id === selectedCardIds[0]);
       if (selectedCardIds.length && (!first || first.value !== card.value)) {
         setMessage("Choose cards with the same number for a combo.");
