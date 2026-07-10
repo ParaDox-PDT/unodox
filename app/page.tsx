@@ -95,6 +95,17 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [game, isYourTurn, you]);
 
+  useEffect(() => {
+    if (!game || !you || !isYourTurn || !game.pendingDrawCount || game.awaitingColorFor) return;
+    if (getPlayableCards(game, you.id).length) return;
+    const drawnCount = game.pendingDrawCount;
+    const timer = window.setTimeout(() => {
+      setGame(acceptPendingDraw(game, you.id));
+      setMessage(`No matching draw card — you picked up ${drawnCount} cards and your turn was skipped.`);
+    }, 850);
+    return () => window.clearTimeout(timer);
+  }, [game, isYourTurn, you]);
+
   if (!game || !you) return <main className="game-shell" aria-busy="true" />;
 
   const top = game.discardPile.at(-1)!;
