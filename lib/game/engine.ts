@@ -43,7 +43,12 @@ export function canPlayCard(card: UnoCard, state: GameState): boolean {
   if (state.gameStatus !== "playing" || state.awaitingColorFor) return false;
   if (state.pendingDrawCount) return state.drawStackType === "drawFour" ? card.value === "wild4" : card.value === "draw2" || card.value === "wild4";
   const top = topCard(state);
-  return card.value === "wild" || card.value === "wild4" || card.color === state.activeColor || card.value === top.value;
+  if (card.value === "wild") return true;
+  if (card.value === "wild4") {
+    const currentHand = state.players[state.currentPlayerIndex]?.hand ?? [];
+    return !currentHand.some(held => held.color === state.activeColor);
+  }
+  return card.color === state.activeColor || card.value === top.value;
 }
 export function getPlayableCards(state: GameState, playerId: string) {
   const player = state.players[state.currentPlayerIndex];

@@ -30,9 +30,14 @@ export default function Home() {
   const chooseColor = (color: CardColor) => update(state => selectWildColor(state, you.id, color), `Active color is now ${color}.`);
 
   useEffect(() => {
-    if (isYourTurn || game.gameStatus === "finished" || game.awaitingColorFor) return;
+    if (isYourTurn || game.gameStatus === "finished" || game.awaitingColorFor === you.id) return;
     const timer = window.setTimeout(() => {
       const bot = game.players[game.currentPlayerIndex];
+      if (game.awaitingColorFor === bot.id) {
+        const next = selectWildColor(game, bot.id, COLORS[Math.floor(Math.random() * COLORS.length)]);
+        setGame(next); setMessage(`${bot.name} chose ${next.activeColor}.`);
+        return;
+      }
       const playable = getPlayableCards(game, bot.id);
       const choice = playable[0];
       try {
@@ -42,7 +47,7 @@ export default function Home() {
       } catch { setMessage(`${bot.name} could not make a move.`); }
     }, 850);
     return () => window.clearTimeout(timer);
-  }, [game, isYourTurn]);
+  }, [game, isYourTurn, you.id]);
 
   const colorPick = game.awaitingColorFor === you.id;
   return <main className="game-shell">
@@ -51,9 +56,8 @@ export default function Home() {
       <div className="wood-edge" />
       <Opponent player={game.players[1]} className="lena" />
       <Opponent player={game.players[2]} className="milo" />
-      <div className="status"><span className={`turn-dot ${isYourTurn ? "you" : ""}`} />{message}{game.pendingDrawCount > 0 && <b className="draw-counter"> +{game.pendingDrawCount}</b>}</div>
       <div className="center-pile"><button className="deck-card" onClick={draw} disabled={!isYourTurn || !!game.awaitingColorFor || game.gameStatus === "finished"} aria-label={game.pendingDrawCount ? `Accept ${game.pendingDrawCount} cards` : "Draw a card"}><img src="/cards/card.png" alt="UNO draw pile" /><em>{game.drawPile.length}</em></button><CardFace card={game.discardPile.at(-1)!} /></div>
-      <div className="your-area"><div className="player-label"><b>You</b><small>{you.hand.length} cards</small></div><div className="hand">{you.hand.map(card => { const selectedCard = selected.includes(card.id); const allowed = selectedCard || (!selected.length ? canPlayCard(card, game) : numeric(card) && numeric(you.hand.find(item => item.id === selected[0])!) && card.value === you.hand.find(item => item.id === selected[0])!.value); return <button key={card.id} className={`hand-card ${allowed && isYourTurn ? "playable" : ""} ${selectedCard ? "selected" : ""}`} disabled={!isYourTurn || !allowed || !!game.awaitingColorFor || game.gameStatus === "finished"} onClick={() => toggleCard(card)} aria-label={`Play ${card.color ?? "wild"} ${names[card.value]}`}><CardFace card={card} /></button>; })}</div>{selected.length > 0 && <div className="combo-actions"><button onClick={playSelected}>Play {selected.length} card{selected.length > 1 ? "s" : ""}</button><button onClick={() => setGame(state => ({ ...state, selectedComboCards: [] }))}>Cancel</button></div>}</div>
+      <div className="your-area"><div className="player-label"><b>You</b><small>{you.hand.length} cards</small></div><div className="hand">{you.hand.map(card => { const selectedCard = selected.includes(card.id); const allowed = selectedCard || (!selected.length ? canPlayCard(card, game) : numeric(card) && numeric(you.hand.find(item => item.id === selected[0])!) && card.value === you.hand.find(item => item.id === selected[0])!.value); return <button key={card.id} className={`hand-card ${allowed && isYourTurn ? "playable" : ""} ${selectedCard ? "selected" : ""}`} disabled={!isYourTurn || !allowed || !!game.awaitingColorFor || game.gameStatus === "finished"} onClick={() => toggleCard(card)} aria-label={`Play ${card.color ?? "wild"} ${names[card.value]}`}><CardFace card={card} /></button>; })}</div>{selected.length > 0 && <div className="combo-actions"><button onClick={playSelected}>Play {selected.length} card{selected.length > 1 ? "s" : ""}</button><button onClick={() => setGame(state => ({ ...state, selectedComboCards: [] }))}>Cancel</button></div>}<p className="game-hint" role="status"><span className={`turn-dot ${isYourTurn ? "you" : ""}`} />{message}{game.pendingDrawCount > 0 && <b className="draw-counter"> +{game.pendingDrawCount}</b>}</p></div>
       {game.gameStatus === "finished" && <div className="winner"><strong>{game.players.find(player => player.id === game.winnerId)?.name} wins!</strong><span>{game.winnerId === you.id ? "That was a clean finish." : "Shuffle up and take another shot."}</span><button onClick={reset}>Play again</button></div>}
       {colorPick && <div className="color-picker"><strong>Choose a color</strong><div>{COLORS.map(color => <button key={color} className={color} onClick={() => chooseColor(color)}>{color}</button>)}</div></div>}
     </section>
