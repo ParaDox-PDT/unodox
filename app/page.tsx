@@ -5,6 +5,12 @@ import { acceptPendingDraw, canPlayCard, CardColor, CardValue, COLORS, createGam
 
 const names: Record<CardValue, string> = { skip: "Skip", reverse: "Reverse", draw2: "Draw two", wild: "Wild", wild4: "Wild draw four", "0": "0", "1": "1", "2": "2", "3": "3", "4": "4", "5": "5", "6": "6", "7": "7", "8": "8", "9": "9" };
 const cardImage = (card: UnoCard) => card.color === null ? (card.value === "wild4" ? "card_wild_draw4_1.png" : "card_wild_1.png") : `card_${card.value}_${card.color}.png`;
+const cardAssetUrls = [
+  "/cards/card.png",
+  ...COLORS.flatMap(color => ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "skip", "reverse", "draw2"].map(value => `/cards/card_${value}_${color}.png`)),
+  "/cards/card_wild_1.png",
+  "/cards/card_wild_draw4_1.png",
+];
 
 export default function Home() {
   const [game, setGame] = useState<GameState | null>(null);
@@ -19,6 +25,10 @@ export default function Home() {
   useEffect(() => {
     const timer = window.setTimeout(() => setGame(createGame()), 0);
     return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    cardAssetUrls.forEach(url => { const image = new Image(); image.src = url; });
   }, []);
 
   const reset = () => { setGame(createGame()); setSelectedCardIds([]); setMessage("Fresh deck. Your turn!"); };
