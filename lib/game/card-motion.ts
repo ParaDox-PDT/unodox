@@ -26,3 +26,17 @@ export function unoButtonPosition(cardId: string | undefined): { left: string; t
     top: `clamp(120px, ${18 + vertical}%, calc(100% - 170px))`,
   };
 }
+
+export function tapButtonPosition(challengeId: string, userId: string): { left: string; top: string } {
+  let hash = 2166136261;
+  for (const character of `${challengeId}:${userId}`) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  const horizontal = (hash >>> 0) % 67;
+  const vertical = (Math.imul(hash, 1103515245) >>> 0) % 52;
+  return {
+    left: `clamp(62px, ${16 + horizontal}%, calc(100% - 62px))`,
+    top: `clamp(150px, ${20 + vertical}%, calc(100% - 155px))`,
+  };
+}

@@ -5,9 +5,9 @@
 import { type CSSProperties, type DragEvent, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Socket } from "socket.io-client";
 import { backendApi, BackendError, loadSession, saveSession } from "@/lib/backend/api-client";
-import { cardAssetName, cardLabel, GAME_EVENTS, type AuthSession, type CardColor, type PlayerPrivateGameState, type PublicRoomSummary, type Room, type UnoCard } from "@/lib/backend/contracts";
+import { cardAssetName, cardLabel, GAME_EVENTS, type AuthSession, type CardColor, type NumberEffectNotice, type PlayerPrivateGameState, type PublicRoomSummary, type Room, type UnoCard } from "@/lib/backend/contracts";
 import { createGameSocket, emitCommand } from "@/lib/backend/game-socket";
-import { cardThrowVariables, unoButtonPosition } from "@/lib/game/card-motion";
+import { cardThrowVariables, tapButtonPosition, unoButtonPosition } from "@/lib/game/card-motion";
 import { OfflineGame } from "./offline-game";
 
 const COLORS: CardColor[] = ["red", "yellow", "green", "blue"];
@@ -26,6 +26,25 @@ function errorMessage(error: unknown): string {
 function newerGame(previous: PlayerPrivateGameState | null, next: PlayerPrivateGameState | null): PlayerPrivateGameState | null {
   if (!next || (previous && next.gameId === previous.gameId && next.version < previous.version)) return previous;
   return next;
+}
+
+function effectMessage(effect: NumberEffectNotice, players: PlayerPrivateGameState["players"]): string {
+  const name = (userId: string) => players.find(player => player.userId === userId)?.displayName ?? "Player";
+  switch (effect.type) {
+    case "hands_rotated": return `${name(effect.actorUserId)} played 0. Every hand moved around the table.`;
+    case "hand_peeked": return effect.targetUserId ? `${name(effect.actorUserId)} privately viewed ${name(effect.targetUserId)}'s hand.` : `${name(effect.actorUserId)} used a private hand peek.`;
+    case "hands_swapped": return `${name(effect.actorUserId)} swapped hands with ${name(effect.targetUserId)}.`;
+    case "hand_swap_skipped": return `${name(effect.actorUserId)} kept their hand.`;
+    case "tap_penalty": return effect.penalties.map(penalty => `${name(penalty.userId)} +${penalty.amount}`).join("  ");
+  }
+}
+
+function handEffectClass(effect: NumberEffectNotice | null, userId: string): string {
+  if (!effect) return "";
+  if (effect.type === "hands_rotated") return "hand-rotating";
+  if (effect.type === "hands_swapped" && [effect.actorUserId, effect.targetUserId].includes(userId)) return "hand-swapping";
+  if (effect.type === "tap_penalty" && effect.penalties.some(penalty => penalty.userId === userId)) return "hand-penalty";
+  return "";
 }
 
 export function UnoApp() {
@@ -240,10 +259,14 @@ function GameTable({ userId, game, command, onGame, onMainMenu }: { userId: stri
   const [message, setMessage] = useState("");
   const [mustPlayDrawn, setMustPlayDrawn] = useState(false);
   const [turnNotice, setTurnNotice] = useState("");
+  const [activeEffect, setActiveEffect] = useState<NumberEffectNotice | null>(null);
+  const [activeReveal, setActiveReveal] = useState<PlayerPrivateGameState["privateHandReveal"]>(null);
   const [dropAnimation, setDropAnimation] = useState<{ cardId: string; sequence: number; style: CSSProperties } | null>(null);
   const previousGame = useRef(game);
   const lastSeenTurnNotice = useRef("");
   const turnNoticeTimer = useRef<number | null>(null);
+  const lastSeenEffect = useRef("");
+  const effectTimer = useRef<number | null>(null);
   const me = game.players.find(player => player.userId === userId);
   const current = game.players.find(player => player.userId === game.currentPlayerId);
   const opponents = useMemo(() => game.players.filter(player => player.userId !== userId).sort((a, b) => a.seatIndex - b.seatIndex), [game.players, userId]);
@@ -252,6 +275,26 @@ function GameTable({ userId, game, command, onGame, onMainMenu }: { userId: stri
   const selectedValue = selectedCards[0]?.value;
   const unoTarget = game.unoCallWindow ? game.players.find(player => player.userId === game.unoCallWindow?.targetUserId) : null;
   const unoPosition = unoButtonPosition(game.unoCallWindow?.cardId);
+  const tapPosition = game.tapChallenge ? tapButtonPosition(game.tapChallenge.id, userId) : undefined;
+  useEffect(() => {
+    const effect = game.lastNumberEffect;
+    if (!effect || lastSeenEffect.current === effect.id) return;
+    lastSeenEffect.current = effect.id;
+    queueMicrotask(() => setActiveEffect(effect));
+    if (effectTimer.current !== null) window.clearTimeout(effectTimer.current);
+    effectTimer.current = window.setTimeout(() => {
+      setActiveEffect(currentEffect => currentEffect?.id === effect.id ? null : currentEffect);
+      effectTimer.current = null;
+    }, 2_800);
+  }, [game.lastNumberEffect]);
+  useEffect(() => {
+    const reveal = game.privateHandReveal;
+    if (!reveal) { queueMicrotask(() => setActiveReveal(null)); return; }
+    const remaining = Math.max(0, new Date(reveal.expiresAt).getTime() - Date.now());
+    queueMicrotask(() => setActiveReveal(remaining > 0 ? reveal : null));
+    const timer = window.setTimeout(() => setActiveReveal(null), remaining);
+    return () => window.clearTimeout(timer);
+  }, [game.privateHandReveal]);
   useEffect(() => {
     const notice = game.lastTurnNotice;
     if (!notice) return;
@@ -263,7 +306,10 @@ function GameTable({ userId, game, command, onGame, onMainMenu }: { userId: stri
     if (turnNoticeTimer.current !== null) window.clearTimeout(turnNoticeTimer.current);
     turnNoticeTimer.current = window.setTimeout(() => { setTurnNotice(""); turnNoticeTimer.current = null; }, 3_200);
   }, [game.gameId, game.lastTurnNotice, game.players]);
-  useEffect(() => () => { if (turnNoticeTimer.current !== null) window.clearTimeout(turnNoticeTimer.current); }, []);
+  useEffect(() => () => {
+    if (turnNoticeTimer.current !== null) window.clearTimeout(turnNoticeTimer.current);
+    if (effectTimer.current !== null) window.clearTimeout(effectTimer.current);
+  }, []);
   useEffect(() => {
     const previous = previousGame.current;
     previousGame.current = game;
@@ -307,6 +353,16 @@ function GameTable({ userId, game, command, onGame, onMainMenu }: { userId: stri
     const target = next?.players.find(player => player.userId === targetUserId);
     if (target) setMessage(target.handCount > 1 ? `${target.displayName} takes 2 penalty cards.` : `${target.displayName} called UNO in time!`);
   };
+  const selectEffectTarget = async (targetUserId: string) => {
+    const kind = game.pendingNumberEffect?.kind;
+    await apply(GAME_EVENTS.selectNumberEffectTarget, { targetUserId }, kind === "peek" ? "Private hand view opened for 5 seconds." : "Hands swapped.");
+  };
+  const skipEffect = async () => { await apply(GAME_EVENTS.skipNumberEffect, {}, "You kept your hand."); };
+  const tap = async () => {
+    if (!game.tapChallenge || game.tapChallenge.hasTapped) return;
+    const next = await apply(GAME_EVENTS.tapChallenge, { challengeId: game.tapChallenge.id }, "Tap locked.");
+    if (next?.tapChallenge) setMessage("Tap locked. Waiting for the other players.");
+  };
   const returnToMenu = async () => {
     setReturningToMenu(true); setMessage("");
     try { await onMainMenu(); }
@@ -315,11 +371,20 @@ function GameTable({ userId, game, command, onGame, onMainMenu }: { userId: stri
   const startDrag = (event: DragEvent<HTMLButtonElement>, card: UnoCard) => { setDraggedCardId(card.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", card.id); };
   const drop = (event: DragEvent<HTMLDivElement>) => { event.preventDefault(); const id = event.dataTransfer.getData("text/plain") || draggedCardId; setDraggedCardId(null); if (id) void play(id); };
   const winner = game.players.find(player => player.userId === game.winnerUserId);
+  const revealTarget = activeReveal ? game.players.find(player => player.userId === activeReveal.targetUserId) : null;
+  const pendingActor = game.pendingNumberEffect ? game.players.find(player => player.userId === game.pendingNumberEffect?.actorUserId) : null;
+  const specialHint = game.pendingNumberEffect
+    ? game.pendingNumberEffect.canChooseTarget
+      ? game.pendingNumberEffect.kind === "peek" ? "Choose one hand to view privately." : "Choose a player to swap with, or keep your hand."
+      : `Waiting for ${pendingActor?.displayName ?? "the player"} to choose.`
+    : game.tapChallenge
+      ? game.tapChallenge.hasTapped ? "Your TAP is locked. Waiting for everyone else." : "Find and press TAP before the other players."
+      : "";
   return <section className="server-game">
     <div className="game-toolbar"><div><b>Turn {game.turnNumber}</b><span>{isYourTurn ? "Your move" : `${current?.displayName ?? "Player"} is playing`}</span></div><div className="server-badge">SERVER · v{game.version}</div></div>
     <div className="game-board online-board" aria-label="Online UNO card game">
       <div className="wood-edge" />
-      <div className="remote-players">{opponents.map(player => <RemotePlayer key={player.userId} player={player} active={player.userId === game.currentPlayerId} />)}</div>
+      <div className="remote-players">{opponents.map(player => <RemotePlayer key={player.userId} player={player} active={player.userId === game.currentPlayerId} effectClass={handEffectClass(activeEffect, player.userId)} />)}</div>
       <div className={`table-turn-banner ${isYourTurn ? "your-turn" : ""}`}><i /><span>{isYourTurn ? "Your turn" : `${current?.displayName ?? "Player"}'s turn`}</span></div>
       {turnNotice && <div className="turn-pass-notice" role="status" aria-live="polite">{turnNotice}</div>}
       <div key={game.direction} className={`table-direction-banner ${game.direction.replace("_", "-")}`}><strong>{game.direction === "clockwise" ? "↻" : "↺"}</strong><span>{game.direction === "clockwise" ? "Clockwise" : "Counter-clockwise"}</span></div>
@@ -327,16 +392,20 @@ function GameTable({ userId, game, command, onGame, onMainMenu }: { userId: stri
         <button className="deck-card" onClick={draw} disabled={busy || !!selectedCardIds.length || !!game.unoCallWindow || mustPlayDrawn || (!game.canDraw && !game.canAcceptDrawPenalty) || game.canChooseColor || game.status === "finished"} aria-label={game.canAcceptDrawPenalty ? "Accept draw penalty" : "Draw a card"}><img src="/cards/card.png" alt="UNO draw pile" /><em>{game.drawPileCount}</em>{game.canAcceptDrawPenalty && <strong className="penalty-tag">Take</strong>}</button>
         <div className={`discard-zone ${draggedCardId ? "drop-ready" : ""}`} onDragOver={event => event.preventDefault()} onDrop={drop}><CardFace key={`${game.topDiscardCard.id}-${dropAnimation?.cardId === game.topDiscardCard.id ? dropAnimation.sequence : "idle"}`} card={game.topDiscardCard} className={`discard-card ${dropAnimation?.cardId === game.topDiscardCard.id ? "card-drop" : ""}`} style={dropAnimation?.cardId === game.topDiscardCard.id ? dropAnimation.style : undefined} /><span className={`active-color ${game.currentColor}`}>{game.currentColor}</span></div>
       </div>
-      <div className="your-area"><div className="player-label"><b>{me?.displayName ?? "You"}</b><small>{game.ownHand.length} cards</small></div><div className="hand">{game.ownHand.map((card, index) => { const playable = game.playableCardIds.includes(card.id); const selectable = Boolean(selectedValue !== undefined && isYourTurn && !game.unoCallWindow && isNumberCard(card) && card.value === selectedValue); const selected = selectedCardIds.includes(card.id); return <button key={card.id} style={{ animationDelay: `${index * 35}ms` }} className={`hand-card ${(playable && isYourTurn) || selectable ? "playable" : ""} ${selected ? "selected" : ""} ${draggedCardId === card.id ? "dragging" : ""}`} disabled={busy || !isYourTurn || (!playable && !selectable) || !!game.unoCallWindow || game.canChooseColor || game.status === "finished"} draggable={!busy && isYourTurn && playable && !selectedCardIds.length} onDragStart={event => startDrag(event, card)} onDragEnd={() => setDraggedCardId(null)} onClick={() => chooseCard(card)}><CardFace card={card} /></button>; })}</div><div className="game-actions">{selectedCardIds.length > 0 && !game.unoCallWindow && <><button className="combo-play-button" disabled={busy} onClick={playSelected}>Play {selectedCardIds.length}{selectedCardIds.length > 1 ? " together" : " card"}</button><button className="combo-cancel-button" disabled={busy} onClick={() => setSelectedCardIds([])}>Cancel</button></>}</div><p className="game-hint" role="status"><span className={`turn-dot ${isYourTurn ? "you" : ""}`} />{selectedCardIds.length ? "Select every matching number you want, then play them together." : message || (mustPlayDrawn ? "Play the card you drew to finish your turn." : isYourTurn ? game.canAcceptDrawPenalty ? "Stack a matching draw card or take the penalty." : "Play a highlighted card or draw." : `Waiting for ${current?.displayName ?? "the next player"}…`)}</p></div>
+      <div className={`your-area ${handEffectClass(activeEffect, userId)}`}><div className="player-label"><b>{me?.displayName ?? "You"}</b><small>{game.ownHand.length} cards</small></div><div className="hand">{game.ownHand.map((card, index) => { const playable = game.playableCardIds.includes(card.id); const selectable = Boolean(selectedValue !== undefined && isYourTurn && !game.unoCallWindow && !game.pendingNumberEffect && !game.tapChallenge && isNumberCard(card) && card.value === selectedValue); const selected = selectedCardIds.includes(card.id); return <button key={card.id} style={{ animationDelay: `${index * 35}ms` }} className={`hand-card ${(playable && isYourTurn) || selectable ? "playable" : ""} ${selected ? "selected" : ""} ${draggedCardId === card.id ? "dragging" : ""}`} disabled={busy || !isYourTurn || (!playable && !selectable) || !!game.unoCallWindow || !!game.pendingNumberEffect || !!game.tapChallenge || game.canChooseColor || game.status === "finished"} draggable={!busy && isYourTurn && playable && !selectedCardIds.length} onDragStart={event => startDrag(event, card)} onDragEnd={() => setDraggedCardId(null)} onClick={() => chooseCard(card)}><CardFace card={card} /></button>; })}</div><div className="game-actions">{selectedCardIds.length > 0 && !game.unoCallWindow && !game.pendingNumberEffect && !game.tapChallenge && <><button className="combo-play-button" disabled={busy} onClick={playSelected}>Play {selectedCardIds.length}{selectedCardIds.length > 1 ? " together" : " card"}</button><button className="combo-cancel-button" disabled={busy} onClick={() => setSelectedCardIds([])}>Cancel</button></>}</div><p className="game-hint" role="status"><span className={`turn-dot ${isYourTurn ? "you" : ""}`} />{selectedCardIds.length ? "Select every matching number you want, then play them together." : specialHint || message || (mustPlayDrawn ? "Play the card you drew to finish your turn." : isYourTurn ? game.canAcceptDrawPenalty ? "Stack a matching draw card or take the penalty." : "Play a highlighted card or draw." : `Waiting for ${current?.displayName ?? "the next player"}…`)}</p></div>
       {game.unoCallWindow && <button className="uno-race-button" style={unoPosition} disabled={busy} onClick={callUno} aria-label={game.unoCallWindow.targetUserId === userId ? "Call UNO" : `Catch ${unoTarget?.displayName ?? "player"} without UNO`}>UNO!</button>}
       {game.canChooseColor && <div className="color-picker"><strong>Choose the active color</strong><div>{COLORS.map(color => <button key={color} className={color} disabled={busy} onClick={() => choose(color)}>{color}</button>)}</div></div>}
+      {game.pendingNumberEffect?.canChooseTarget && <div className="number-effect-picker" role="dialog" aria-modal="true" aria-label={game.pendingNumberEffect.kind === "peek" ? "Choose a hand to view" : "Choose a player to swap hands with"}><div className="number-effect-card"><span className="effect-number">{game.pendingNumberEffect.kind === "peek" ? "1" : "7"}</span><div><strong>{game.pendingNumberEffect.kind === "peek" ? "Choose a hand to view" : "Choose your swap"}</strong><p>{game.pendingNumberEffect.kind === "peek" ? "Only you will see the selected cards for 5 seconds." : "Both complete hands will change places immediately."}</p></div><div className="effect-targets">{game.pendingNumberEffect.eligibleTargetUserIds.map(targetUserId => { const target = game.players.find(player => player.userId === targetUserId); return <button key={targetUserId} disabled={busy} onClick={() => selectEffectTarget(targetUserId)}><span>{target?.displayName.slice(0, 1).toUpperCase()}</span><b>{target?.displayName ?? "Player"}</b><small>{target?.handCount ?? 0} cards</small></button>; })}</div>{game.pendingNumberEffect.canSkip && <button className="effect-skip" disabled={busy} onClick={skipEffect}>Keep my hand</button>}</div></div>}
+      {game.tapChallenge && <button className={`tap-challenge-button ${game.tapChallenge.hasTapped ? "locked" : ""}`} style={tapPosition} disabled={busy || game.tapChallenge.hasTapped} onClick={tap} aria-label={game.tapChallenge.hasTapped ? "TAP registered" : "Press TAP now"}>{game.tapChallenge.hasTapped ? <><b>LOCKED</b><small>Waiting</small></> : <><b>TAP</b><small>Press now</small></>}</button>}
+      {activeReveal && <div className="private-hand-reveal" role="dialog" aria-label={`${revealTarget?.displayName ?? "Player"}'s private hand`}><div className="private-reveal-head"><div><small>PRIVATE VIEW</small><strong>{revealTarget?.displayName ?? "Player"}</strong></div><span>5 sec</span></div><div className="private-reveal-cards">{activeReveal.cards.map(card => <CardFace key={card.id} card={card} />)}</div><p>These cards are visible only on your screen.</p></div>}
+      {activeEffect && <div key={activeEffect.id} className={`number-effect-notice ${activeEffect.type}`} role="status" aria-live="polite"><strong>{activeEffect.type === "hands_rotated" ? "0 ROTATE" : activeEffect.type === "hands_swapped" ? "7 SWAP" : activeEffect.type === "hand_peeked" ? "1 PRIVATE VIEW" : activeEffect.type === "tap_penalty" ? "TAP RESULT" : "7 KEPT"}</strong><span>{effectMessage(activeEffect, game.players)}</span>{activeEffect.type === "tap_penalty" && <div className="penalty-card-flight">{activeEffect.penalties.flatMap(penalty => Array.from({ length: Math.max(1, penalty.amount) }, (_, index) => <img key={`${penalty.userId}-${index}`} src="/cards/card.png" alt="Penalty card" />))}</div>}</div>}
       {game.status === "finished" && <div className="winner"><strong>{winner?.displayName ?? "A player"} wins!</strong><span>{game.winnerUserId === userId ? "You cleared your hand." : "The round is complete."}</span><button disabled={returningToMenu} onClick={returnToMenu}>{returningToMenu ? "Returning…" : "Main menu"}</button></div>}
     </div>
   </section>;
 }
 
-function RemotePlayer({ player, active }: { player: PlayerPrivateGameState["players"][number]; active: boolean }) {
-  return <div className={`remote-player ${active ? "active" : ""} ${player.status}`}><div className="player-label"><b>{player.displayName}</b><small>{player.handCount} cards{player.hasCalledUno ? " · UNO!" : ""}</small></div><div className="card-stack">{Array.from({ length: Math.min(player.handCount, 7) }).map((_, index) => <i key={index}><img src="/cards/card.png" alt="" /></i>)}</div></div>;
+function RemotePlayer({ player, active, effectClass }: { player: PlayerPrivateGameState["players"][number]; active: boolean; effectClass: string }) {
+  return <div className={`remote-player ${active ? "active" : ""} ${player.status} ${effectClass}`}><div className="player-label"><b>{player.displayName}</b><small>{player.handCount} cards{player.hasCalledUno ? " · UNO!" : ""}</small></div><div className="card-stack">{Array.from({ length: Math.min(player.handCount, 7) }).map((_, index) => <i key={index}><img src="/cards/card.png" alt="" /></i>)}</div></div>;
 }
 
 function CardFace({ card, className = "", style }: { card: UnoCard; className?: string; style?: CSSProperties }) {

@@ -121,6 +121,38 @@ export interface GamePlayerView {
   status: string;
 }
 
+export type NumberEffectNotice =
+  | {
+      id: string;
+      type: "hands_rotated";
+      actorUserId: string;
+      moves: { fromUserId: string; toUserId: string }[];
+    }
+  | {
+      id: string;
+      type: "hand_peeked";
+      actorUserId: string;
+      targetUserId?: string;
+    }
+  | {
+      id: string;
+      type: "hands_swapped";
+      actorUserId: string;
+      targetUserId: string;
+    }
+  | {
+      id: string;
+      type: "hand_swap_skipped";
+      actorUserId: string;
+    }
+  | {
+      id: string;
+      type: "tap_penalty";
+      actorUserId: string;
+      penalties: { userId: string; amount: number }[];
+      tied: boolean;
+    };
+
 export interface PlayerPrivateGameState {
   gameId: string;
   roomId: string;
@@ -137,6 +169,27 @@ export interface PlayerPrivateGameState {
   canAcceptDrawPenalty: boolean;
   canChooseColor: boolean;
   unoCallWindow: { targetUserId: string; cardId: string } | null;
+  pendingNumberEffect: {
+    kind: "peek" | "swap";
+    actorUserId: string;
+    canChooseTarget: boolean;
+    canSkip: boolean;
+    eligibleTargetUserIds: string[];
+  } | null;
+  tapChallenge: {
+    id: string;
+    actorUserId: string;
+    startedAt: string;
+    deadlineAt: string;
+    participantCount: number;
+    hasTapped: boolean;
+  } | null;
+  privateHandReveal: {
+    targetUserId: string;
+    cards: UnoCard[];
+    expiresAt: string;
+  } | null;
+  lastNumberEffect: NumberEffectNotice | null;
   lastTurnNotice: { type: "unplayable_draw_passed"; userId: string; turnNumber: number } | null;
   winnerUserId: string | null;
   turnNumber: number;
@@ -157,6 +210,9 @@ export const GAME_EVENTS = {
   drawCard: "game:draw-card",
   chooseColor: "game:choose-color",
   callUno: "game:call-uno",
+  selectNumberEffectTarget: "game:select-number-effect-target",
+  skipNumberEffect: "game:skip-number-effect",
+  tapChallenge: "game:tap-challenge",
   gameSync: "game:sync",
   roomUpdated: "room:updated",
   roomReconnected: "room:reconnected",
