@@ -60,6 +60,7 @@ export function UnoApp() {
   const [notice, setNotice] = useState("");
   const [pendingInvite, setPendingInvite] = useState<RoomInvite | null>(null);
   const [socketSynced, setSocketSynced] = useState(false);
+  const [returningToMenu, setReturningToMenu] = useState(false);
   const inviteAttemptRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -88,6 +89,10 @@ export function UnoApp() {
   }, []);
 
   const acceptRoom = useCallback((next: Room | null) => {
+    if (next?.status === "closed") {
+      setRoom(null);
+      return;
+    }
     setRoom(previous => !next || !previous || next.id !== previous.id || next.version >= previous.version ? next : previous);
   }, []);
 
@@ -123,11 +128,19 @@ export function UnoApp() {
       try { setNotice(JSON.parse(error.message).message ?? "Could not connect to the game server."); }
       catch { setNotice(error.message || "Could not connect to the game server."); }
     });
-    nextSocket.on(GAME_EVENTS.roomUpdated, ({ room: updated }: { room: Room }) => acceptRoom(updated));
+    nextSocket.on(GAME_EVENTS.roomUpdated, ({ room: updated }: { room: Room }) => {
+      if (updated.status === "closed") {
+        setRoom(null);
+        setGame(null);
+        setNotice("The room was closed. You returned to the main menu.");
+        return;
+      }
+      acceptRoom(updated);
+    });
     nextSocket.on(GAME_EVENTS.roomReconnected, (ack: { data?: Room }) => { if (ack.data) acceptRoom(ack.data); });
     nextSocket.on(GAME_EVENTS.gamePrivateState, (state: PlayerPrivateGameState) => setGame(previous => newerGame(previous, state)));
     nextSocket.on(GAME_EVENTS.roomKicked, () => { setRoom(null); setGame(null); setNotice("You were removed from the room."); });
-    nextSocket.on(GAME_EVENTS.roomClosed, () => { setRoom(null); setGame(null); setNotice("The room was closed."); });
+    nextSocket.on(GAME_EVENTS.roomClosed, () => { setRoom(null); setGame(null); setNotice("The room was closed. You returned to the main menu."); });
     nextSocket.on("exception", (error: { message?: string }) => setNotice(error?.message ?? "The server rejected that action."));
     return () => { nextSocket.removeAllListeners(); nextSocket.disconnect(); if (socketRef.current === nextSocket) socketRef.current = null; };
   }, [acceptRoom, offline, session]);
@@ -202,11 +215,23 @@ export function UnoApp() {
   }, [acceptRoom, clearPendingInvite, command, game, pendingInvite, room, socketSynced]);
 
   const returnToMainMenu = useCallback(async () => {
-    await command<Room | null>(GAME_EVENTS.roomLeave);
-    setGame(null);
-    acceptRoom(null);
-    await refreshRooms();
-  }, [acceptRoom, command, refreshRooms]);
+    if (returningToMenu) return;
+    setReturningToMenu(true);
+    try {
+      try {
+        await command<Room | null>(GAME_EVENTS.roomLeave);
+      } catch (error) {
+        const code = error instanceof BackendError ? error.code : "UNKNOWN";
+        if (!["PLAYER_NOT_IN_ROOM", "ROOM_NOT_FOUND", "ROOM_CLOSED"].includes(code)) throw error;
+        setNotice("");
+      }
+      setGame(null);
+      acceptRoom(null);
+      await refreshRooms();
+    } finally {
+      setReturningToMenu(false);
+    }
+  }, [acceptRoom, command, refreshRooms, returningToMenu]);
 
   const authenticated = (next: AuthSession) => { setSession(next); setNotice(""); };
   const logout = async () => {
@@ -222,7 +247,7 @@ export function UnoApp() {
   const shell = (content: React.ReactNode) => <main className="online-shell">
     <header className="online-header">
       <div className="brand"><span>UNO</span> ONLINE</div>
-      <div className="session-meta"><span className="connection-state"><i className={connected ? "online" : "offline"} />{connected ? "Connected" : "Reconnecting"}</span><b className="session-name" title={session.user.displayName}>{session.user.displayName}</b><div className="session-actions"><button onClick={() => setOffline(true)}>Single player</button><button onClick={logout}>Log out</button></div></div>
+      <div className="session-meta"><span className="connection-state"><i className={connected ? "online" : "offline"} />{connected ? "Connected" : "Reconnecting"}</span><b className="session-name" title={session.user.displayName}>{session.user.displayName}</b><div className={`session-actions ${room && !game ? "has-main-menu" : ""}`}>{room && !game && <button className="main-menu-action" disabled={!connected || returningToMenu} onClick={() => void returnToMainMenu()}>{returningToMenu ? "Leaving…" : "Main menu"}</button>}<button onClick={() => setOffline(true)}>Single player</button><button onClick={logout}>Log out</button></div></div>
     </header>
     {notice && <div className="global-notice" role="alert">{notice}<button onClick={() => setNotice("")} aria-label="Dismiss">×</button></div>}
     {content}
