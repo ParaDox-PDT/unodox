@@ -1,4 +1,8 @@
-# vinext-starter
+# UNO Online web client
+
+This Next.js client uses the UNO NestJS backend for authentication, room lifecycle, and server-authoritative multiplayer game state.
+
+It also includes a backend-independent single-player mode with one human player and three randomly named bots.
 
 A clean full-stack starter running on
 [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
@@ -15,6 +19,8 @@ npm install
 npm run dev
 npm run build
 ```
+
+Copy `.env.example` to `.env.local` first. On Windows PowerShell use `Copy-Item .env.example .env.local`. Set `NEXT_PUBLIC_API_URL` to the backend REST prefix and `NEXT_PUBLIC_SOCKET_URL` to the backend origin. The defaults target the local backend on port `3001`.
 
 This starter does not use `wrangler.jsonc`.
 
