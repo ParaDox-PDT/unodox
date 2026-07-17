@@ -1,6 +1,6 @@
 import type { AuthSession, AuthUser, ErrorResponse, PublicRoomSummary, Room, SuccessResponse, TokenPair } from "./contracts";
+import { getOrCreateGuestDeviceId, readPersistentSession, writePersistentSession } from "./client-storage";
 
-const SESSION_KEY = "uno.backend.session";
 const DEFAULT_API_URL = "http://localhost:3001/api/v1";
 
 let session: AuthSession | null = null;
@@ -24,22 +24,14 @@ export function socketBaseUrl(): string {
 export function loadSession(): AuthSession | null {
   if (session) return session;
   if (typeof window === "undefined") return null;
-  const stored = window.sessionStorage.getItem(SESSION_KEY);
-  if (!stored) return null;
-  try {
-    session = JSON.parse(stored) as AuthSession;
-    return session;
-  } catch {
-    window.sessionStorage.removeItem(SESSION_KEY);
-    return null;
-  }
+  session = readPersistentSession(window.localStorage, window.sessionStorage);
+  return session;
 }
 
 export function saveSession(next: AuthSession | null): void {
   session = next;
   if (typeof window === "undefined") return;
-  if (next) window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(next));
-  else window.sessionStorage.removeItem(SESSION_KEY);
+  writePersistentSession(next, window.localStorage, window.sessionStorage);
 }
 
 export function currentAccessToken(): string | null {
@@ -104,7 +96,11 @@ async function authenticate(path: string, input: unknown): Promise<AuthSession> 
 }
 
 export const backendApi = {
-  guest: (displayName: string) => authenticate("/auth/guest", displayName.trim() ? { displayName } : {}),
+  guest: (displayName: string) => {
+    if (typeof window === "undefined") throw new BackendError("BROWSER_REQUIRED", "Guest login requires a browser.");
+    const deviceId = getOrCreateGuestDeviceId(window.localStorage, () => crypto.randomUUID());
+    return authenticate("/auth/guest", displayName.trim() ? { displayName, deviceId } : { deviceId });
+  },
   login: (email: string, password: string) => authenticate("/auth/login", { email, password }),
   register: (email: string, password: string, displayName: string) => authenticate("/auth/register", { email, password, displayName }),
   me: () => request<AuthUser>("/auth/me"),
