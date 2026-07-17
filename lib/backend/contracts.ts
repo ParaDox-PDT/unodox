@@ -63,6 +63,7 @@ export interface RoomPlayer {
   status: "connected" | "disconnected" | "left";
   joinedAt: string;
   disconnectedAt: string | null;
+  disconnectDeadlineAt: string | null;
   lastSeenAt: string;
 }
 
@@ -118,7 +119,9 @@ export interface GamePlayerView {
   seatIndex: number;
   handCount: number;
   hasCalledUno: boolean;
-  status: string;
+  status: "active" | "disconnected" | "left" | "won";
+  disconnectedAt: string | null;
+  disconnectDeadlineAt: string | null;
 }
 
 export type NumberEffectNotice =
@@ -191,6 +194,12 @@ export interface PlayerPrivateGameState {
   } | null;
   lastNumberEffect: NumberEffectNotice | null;
   lastTurnNotice: { type: "unplayable_draw_passed"; userId: string; turnNumber: number } | null;
+  lastPlayerElimination: {
+    id: string;
+    userId: string;
+    returnedCardCount: number;
+    reason: "disconnect_timeout";
+  } | null;
   winnerUserId: string | null;
   turnNumber: number;
   version: number;

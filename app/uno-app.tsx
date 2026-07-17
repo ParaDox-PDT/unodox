@@ -48,6 +48,21 @@ function handEffectClass(effect: NumberEffectNotice | null, userId: string): str
   return "";
 }
 
+function useDeadlineClock(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return now;
+}
+
+function formatCountdown(deadlineAt: string | null | undefined, now: number): string {
+  const seconds = Math.max(0, Math.ceil(((deadlineAt ? Date.parse(deadlineAt) : now) - now) / 1_000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
 export function UnoApp() {
   const [offline, setOffline] = useState(false);
   const [session, setSession] = useState<AuthSession | null>(null);
@@ -140,7 +155,15 @@ export function UnoApp() {
     nextSocket.on(GAME_EVENTS.roomReconnected, (ack: { data?: Room }) => { if (ack.data) acceptRoom(ack.data); });
     nextSocket.on(GAME_EVENTS.gamePrivateState, (state: PlayerPrivateGameState) => setGame(previous => newerGame(previous, state)));
     nextSocket.on(GAME_EVENTS.roomKicked, () => { setRoom(null); setGame(null); setNotice("You were removed from the room."); });
-    nextSocket.on(GAME_EVENTS.roomClosed, () => { setRoom(null); setGame(null); setNotice("The room was closed. You returned to the main menu."); });
+    nextSocket.on(GAME_EVENTS.roomClosed, ({ reason }: { reason?: string }) => {
+      setRoom(null);
+      if (reason === "game_finished") {
+        setGame(previous => previous?.status === "finished" ? previous : null);
+        return;
+      }
+      setGame(null);
+      setNotice("The room was closed. You returned to the main menu.");
+    });
     nextSocket.on("exception", (error: { message?: string }) => setNotice(error?.message ?? "The server rejected that action."));
     return () => { nextSocket.removeAllListeners(); nextSocket.disconnect(); if (socketRef.current === nextSocket) socketRef.current = null; };
   }, [acceptRoom, offline, session]);
@@ -325,6 +348,8 @@ function RoomScreen({ userId, room, connected, command, onRoom, onGame }: { user
   const [shareState, setShareState] = useState("");
   const me = room.players.find(player => player.userId === userId);
   const owner = room.ownerId === userId;
+  const waitingAlone = room.players.length === 1 && room.status === "waiting" && Boolean(room.expiresAt);
+  const roomClock = useDeadlineClock(waitingAlone);
   const act = async (name: string, action: () => Promise<void>) => { setBusy(name); try { await action(); } finally { setBusy(""); } };
   const ready = () => act("ready", async () => onRoom(await command<Room>(GAME_EVENTS.roomReady, { isReady: !me?.isReady })));
   const leave = () => act("leave", async () => { await command<Room | null>(GAME_EVENTS.roomLeave); onRoom(null); });
@@ -347,7 +372,7 @@ function RoomScreen({ userId, room, connected, command, onRoom, onGame }: { user
     }
   };
   return <div className="room-wait panel">
-    <div className="room-wait-head"><div><small>{room.visibility.toUpperCase()} ROOM</small><h1>{room.name}</h1><p>{room.code ? <>Invite code <button className="room-code" onClick={() => navigator.clipboard.writeText(room.code!)}>{room.code}</button></> : "Anyone in the public lobby can join."}</p><div className="room-share-row"><button className="share-room" onClick={share}><span>Share room</span></button>{shareState && <small role="status">{shareState}</small>}</div></div><div className={`room-status ${room.status}`}>{room.status.replaceAll("_", " ")}</div></div>
+    <div className="room-wait-head"><div><small>{room.visibility.toUpperCase()} ROOM</small><h1>{room.name}</h1><p>{room.code ? <>Invite code <button className="room-code" onClick={() => navigator.clipboard.writeText(room.code!)}>{room.code}</button></> : "Anyone in the public lobby can join."}</p><div className="room-share-row"><button className="share-room" onClick={share}><span>Share room</span></button>{shareState && <small role="status">{shareState}</small>}</div>{waitingAlone && <div className="room-auto-close" role="status"><i /><span>No one joined yet</span><strong>{formatCountdown(room.expiresAt, roomClock)}</strong><small>Room closes automatically</small></div>}</div><div className={`room-status ${room.status}`}>{room.status.replaceAll("_", " ")}</div></div>
     <div className="seat-grid">{Array.from({ length: room.configuration.maxPlayers }).map((_, index) => { const player = room.players[index]; return player ? <article key={player.userId} className={`${player.isReady ? "ready" : ""} ${player.status}`}><div className="avatar">{player.displayName.slice(0, 1).toUpperCase()}</div><div><b>{player.displayName}{player.userId === userId ? " (you)" : ""}</b><span>{player.isOwner ? "Host" : player.status === "disconnected" ? "Reconnecting" : player.isReady ? "Ready" : "Not ready"}</span></div>{player.isReady && <i>✓</i>}</article> : <article key={index} className="empty-seat"><div className="avatar">＋</div><span>Waiting for player</span></article>; })}</div>
     <div className="room-actions"><button className={me?.isReady ? "secondary-action" : "primary-action"} disabled={!connected || !!busy} onClick={ready}>{busy === "ready" ? "Saving…" : me?.isReady ? "Not ready" : "I’m ready"}</button>{owner && <button className="start-action" disabled={!connected || !!busy || room.status !== "ready_to_start"} onClick={start}>{busy === "start" ? "Starting…" : "Start game"}</button>}<button className="text-action" disabled={!!busy} onClick={owner ? close : leave}>{owner ? "Close room" : "Leave room"}</button></div>
     <p className="ready-help">All connected players must be ready. The host starts when at least {room.configuration.minPlayers} players are seated.</p>
@@ -362,17 +387,21 @@ function GameTable({ userId, game, command, onGame, onMainMenu }: { userId: stri
   const [message, setMessage] = useState("");
   const [mustPlayDrawn, setMustPlayDrawn] = useState(false);
   const [turnNotice, setTurnNotice] = useState("");
+  const [eliminationNotice, setEliminationNotice] = useState("");
   const [activeEffect, setActiveEffect] = useState<NumberEffectNotice | null>(null);
   const [activeReveal, setActiveReveal] = useState<PlayerPrivateGameState["privateHandReveal"]>(null);
   const [dropAnimation, setDropAnimation] = useState<{ cardId: string; sequence: number; style: CSSProperties } | null>(null);
   const previousGame = useRef(game);
   const lastSeenTurnNotice = useRef("");
   const turnNoticeTimer = useRef<number | null>(null);
+  const lastSeenElimination = useRef("");
+  const eliminationTimer = useRef<number | null>(null);
   const lastSeenEffect = useRef("");
   const effectTimer = useRef<number | null>(null);
   const me = game.players.find(player => player.userId === userId);
   const current = game.players.find(player => player.userId === game.currentPlayerId);
-  const opponents = useMemo(() => game.players.filter(player => player.userId !== userId).sort((a, b) => a.seatIndex - b.seatIndex), [game.players, userId]);
+  const opponents = useMemo(() => game.players.filter(player => player.userId !== userId && player.status !== "left").sort((a, b) => a.seatIndex - b.seatIndex), [game.players, userId]);
+  const gameClock = useDeadlineClock(game.players.some(player => player.status === "disconnected"));
   const isYourTurn = game.currentPlayerId === userId && game.status !== "finished";
   const selectedCards = selectedCardIds.map(id => game.ownHand.find(card => card.id === id)).filter(Boolean) as UnoCard[];
   const selectedValue = selectedCards[0]?.value;
@@ -409,9 +438,19 @@ function GameTable({ userId, game, command, onGame, onMainMenu }: { userId: stri
     if (turnNoticeTimer.current !== null) window.clearTimeout(turnNoticeTimer.current);
     turnNoticeTimer.current = window.setTimeout(() => { setTurnNotice(""); turnNoticeTimer.current = null; }, 3_200);
   }, [game.gameId, game.lastTurnNotice, game.players]);
+  useEffect(() => {
+    const elimination = game.lastPlayerElimination;
+    if (!elimination || lastSeenElimination.current === elimination.id) return;
+    lastSeenElimination.current = elimination.id;
+    const player = game.players.find(item => item.userId === elimination.userId);
+    setEliminationNotice(`${player?.displayName ?? "Player"} timed out. ${elimination.returnedCardCount} cards returned to the draw pile.`);
+    if (eliminationTimer.current !== null) window.clearTimeout(eliminationTimer.current);
+    eliminationTimer.current = window.setTimeout(() => { setEliminationNotice(""); eliminationTimer.current = null; }, 4_000);
+  }, [game.lastPlayerElimination, game.players]);
   useEffect(() => () => {
     if (turnNoticeTimer.current !== null) window.clearTimeout(turnNoticeTimer.current);
     if (effectTimer.current !== null) window.clearTimeout(effectTimer.current);
+    if (eliminationTimer.current !== null) window.clearTimeout(eliminationTimer.current);
   }, []);
   useEffect(() => {
     const previous = previousGame.current;
@@ -487,9 +526,10 @@ function GameTable({ userId, game, command, onGame, onMainMenu }: { userId: stri
     <div className="game-toolbar"><div><b>Turn {game.turnNumber}</b><span>{isYourTurn ? "Your move" : `${current?.displayName ?? "Player"} is playing`}</span></div><div className="server-badge">SERVER · v{game.version}</div></div>
     <div className="game-board online-board" aria-label="Online UNO card game">
       <div className="wood-edge" />
-      <div className="remote-players">{opponents.map(player => <RemotePlayer key={player.userId} player={player} active={player.userId === game.currentPlayerId} effectClass={handEffectClass(activeEffect, player.userId)} />)}</div>
+      <div className="remote-players">{opponents.map(player => <RemotePlayer key={player.userId} player={player} active={player.userId === game.currentPlayerId} effectClass={handEffectClass(activeEffect, player.userId)} now={gameClock} />)}</div>
       <div className={`table-turn-banner ${isYourTurn ? "your-turn" : ""}`}><i /><span>{isYourTurn ? "Your turn" : `${current?.displayName ?? "Player"}'s turn`}</span></div>
       {turnNotice && <div className="turn-pass-notice" role="status" aria-live="polite">{turnNotice}</div>}
+      {eliminationNotice && <div className="player-elimination-notice" role="status" aria-live="polite"><img src="/cards/card.png" alt="" /><span>{eliminationNotice}</span></div>}
       <div key={game.direction} className={`table-direction-banner ${game.direction.replace("_", "-")}`}><strong>{game.direction === "clockwise" ? "↻" : "↺"}</strong><span>{game.direction === "clockwise" ? "Clockwise" : "Counter-clockwise"}</span></div>
       <div className="center-zone">
         <button className="deck-card" onClick={draw} disabled={busy || !!selectedCardIds.length || !!game.unoCallWindow || mustPlayDrawn || (!game.canDraw && !game.canAcceptDrawPenalty) || game.canChooseColor || game.status === "finished"} aria-label={game.canAcceptDrawPenalty ? "Accept draw penalty" : "Draw a card"}><img src="/cards/card.png" alt="UNO draw pile" /><em>{game.drawPileCount}</em>{game.canAcceptDrawPenalty && <strong className="penalty-tag">Take</strong>}</button>
@@ -507,8 +547,8 @@ function GameTable({ userId, game, command, onGame, onMainMenu }: { userId: stri
   </section>;
 }
 
-function RemotePlayer({ player, active, effectClass }: { player: PlayerPrivateGameState["players"][number]; active: boolean; effectClass: string }) {
-  return <div className={`remote-player ${active ? "active" : ""} ${player.status} ${effectClass}`}><div className="player-label"><b>{player.displayName}</b><small>{player.handCount} cards{player.hasCalledUno ? " · UNO!" : ""}</small></div><div className="card-stack">{Array.from({ length: Math.min(player.handCount, 7) }).map((_, index) => <i key={index}><img src="/cards/card.png" alt="" /></i>)}</div></div>;
+function RemotePlayer({ player, active, effectClass, now }: { player: PlayerPrivateGameState["players"][number]; active: boolean; effectClass: string; now: number }) {
+  return <div className={`remote-player ${active ? "active" : ""} ${player.status} ${effectClass}`}>{player.status === "disconnected" && <div className="disconnect-countdown"><span>OFFLINE</span><strong>{formatCountdown(player.disconnectDeadlineAt, now)}</strong></div>}<div className="player-label"><b>{player.displayName}</b><small>{player.handCount} cards{player.hasCalledUno ? " · UNO!" : ""}</small></div><div className="card-stack">{Array.from({ length: Math.min(player.handCount, 7) }).map((_, index) => <i key={index}><img src="/cards/card.png" alt="" /></i>)}</div></div>;
 }
 
 function CardFace({ card, className = "", style }: { card: UnoCard; className?: string; style?: CSSProperties }) {
