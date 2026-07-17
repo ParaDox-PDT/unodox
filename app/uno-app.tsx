@@ -7,6 +7,7 @@ import type { Socket } from "socket.io-client";
 import { backendApi, BackendError, loadSession, saveSession } from "@/lib/backend/api-client";
 import { cardAssetName, cardLabel, GAME_EVENTS, type AuthSession, type CardColor, type NumberEffectNotice, type PlayerPrivateGameState, type PublicRoomSummary, type Room, type UnoCard } from "@/lib/backend/contracts";
 import { createGameSocket, emitCommand } from "@/lib/backend/game-socket";
+import { inviteFailureMessage, inviteMatchesRoom, parseRoomInvite, roomInviteUrl, type RoomInvite } from "@/lib/backend/room-invite";
 import { cardThrowVariables, tapButtonPosition, unoButtonPosition } from "@/lib/game/card-motion";
 import { OfflineGame } from "./offline-game";
 
@@ -57,9 +58,21 @@ export function UnoApp() {
   const [room, setRoom] = useState<Room | null>(null);
   const [game, setGame] = useState<PlayerPrivateGameState | null>(null);
   const [notice, setNotice] = useState("");
+  const [pendingInvite, setPendingInvite] = useState<RoomInvite | null>(null);
+  const [socketSynced, setSocketSynced] = useState(false);
+  const inviteAttemptRef = useRef<string | null>(null);
 
   useEffect(() => {
     cardAssetUrls.forEach(url => { const image = new Image(); image.src = url; });
+    const inviteValue = new URLSearchParams(window.location.search).get("invite");
+    const invite = parseRoomInvite(inviteValue);
+    queueMicrotask(() => setPendingInvite(invite));
+    if (inviteValue && !invite) {
+      queueMicrotask(() => setNotice("This room invite link is invalid."));
+      const url = new URL(window.location.href);
+      url.searchParams.delete("invite");
+      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    }
     const stored = loadSession();
     if (!stored) { queueMicrotask(() => setBooting(false)); return; }
     backendApi.me()
@@ -78,12 +91,21 @@ export function UnoApp() {
     setRoom(previous => !next || !previous || next.id !== previous.id || next.version >= previous.version ? next : previous);
   }, []);
 
+  const clearPendingInvite = useCallback(() => {
+    setPendingInvite(null);
+    inviteAttemptRef.current = null;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("invite");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }, []);
+
   useEffect(() => {
     if (!session || offline) return;
     const nextSocket = createGameSocket(session.tokens.accessToken);
     socketRef.current = nextSocket;
     const sync = async () => {
       setConnected(true);
+      setSocketSynced(false);
       try {
         const [currentRoom, currentGame] = await Promise.all([
           emitCommand<Room | null>(nextSocket, GAME_EVENTS.roomSync),
@@ -92,9 +114,10 @@ export function UnoApp() {
         acceptRoom(currentRoom);
         setGame(previous => newerGame(previous, currentGame));
       } catch (error) { setNotice(errorMessage(error)); }
+      finally { setSocketSynced(true); }
     };
     nextSocket.on("connect", sync);
-    nextSocket.on("disconnect", () => setConnected(false));
+    nextSocket.on("disconnect", () => { setConnected(false); setSocketSynced(false); });
     nextSocket.on("connect_error", error => {
       setConnected(false);
       try { setNotice(JSON.parse(error.message).message ?? "Could not connect to the game server."); }
@@ -141,6 +164,43 @@ export function UnoApp() {
     catch (error) { setNotice(errorMessage(error)); throw error; }
   }, []);
 
+  useEffect(() => {
+    inviteAttemptRef.current = null;
+  }, [pendingInvite, session?.user.id]);
+
+  useEffect(() => {
+    if (!pendingInvite || !socketSynced) return;
+    if (room) {
+      if (inviteMatchesRoom(pendingInvite, room)) {
+        queueMicrotask(() => {
+          clearPendingInvite();
+          setNotice("You joined the shared room.");
+        });
+      } else {
+        queueMicrotask(() => setNotice("You are already in another room. Leave it to join the shared room."));
+      }
+      return;
+    }
+    if (game) return;
+    const inviteKey = pendingInvite.kind === "private" ? `code:${pendingInvite.code}` : `room:${pendingInvite.roomId}`;
+    if (inviteAttemptRef.current === inviteKey) return;
+    inviteAttemptRef.current = inviteKey;
+    const event = pendingInvite.kind === "private" ? GAME_EVENTS.roomJoinByCode : GAME_EVENTS.roomJoin;
+    const payload = pendingInvite.kind === "private" ? { code: pendingInvite.code } : { roomId: pendingInvite.roomId };
+    void command<Room>(event, payload)
+      .then(joinedRoom => {
+        acceptRoom(joinedRoom);
+        clearPendingInvite();
+        setNotice("You joined the shared room.");
+      })
+      .catch(error => {
+        const code = error instanceof BackendError ? error.code : "UNKNOWN";
+        setNotice(inviteFailureMessage(code));
+        if (code === "SOCKET_DISCONNECTED" || code === "SOCKET_TIMEOUT") inviteAttemptRef.current = null;
+        else if (code !== "GUESTS_NOT_ALLOWED" && code !== "PLAYER_ALREADY_IN_ROOM") clearPendingInvite();
+      });
+  }, [acceptRoom, clearPendingInvite, command, game, pendingInvite, room, socketSynced]);
+
   const returnToMainMenu = useCallback(async () => {
     await command<Room | null>(GAME_EVENTS.roomLeave);
     setGame(null);
@@ -157,7 +217,7 @@ export function UnoApp() {
 
   if (booting) return <main className="loading-screen" aria-busy="true"><span className="uno-mark">UNO</span><p>Loading your table…</p></main>;
   if (offline) return <OfflineGame onExit={() => setOffline(false)} />;
-  if (!session) return <AuthScreen onAuthenticated={authenticated} onOffline={() => setOffline(true)} />;
+  if (!session) return <AuthScreen hasInvite={Boolean(pendingInvite)} onAuthenticated={authenticated} onOffline={() => setOffline(true)} />;
 
   const shell = (content: React.ReactNode) => <main className="online-shell">
     <header className="online-header">
@@ -173,7 +233,7 @@ export function UnoApp() {
   return shell(<LobbyScreen userType={session.user.type} rooms={rooms} connected={connected} command={command} onRoom={acceptRoom} onRefresh={refreshRooms} />);
 }
 
-function AuthScreen({ onAuthenticated, onOffline }: { onAuthenticated: (session: AuthSession) => void; onOffline: () => void }) {
+function AuthScreen({ hasInvite, onAuthenticated, onOffline }: { hasInvite: boolean; onAuthenticated: (session: AuthSession) => void; onOffline: () => void }) {
   const [mode, setMode] = useState<"guest" | "login" | "register">("guest");
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
@@ -191,6 +251,7 @@ function AuthScreen({ onAuthenticated, onOffline }: { onAuthenticated: (session:
   return <main className="auth-shell">
     <section className="auth-hero"><div className="hero-logo">UNO</div><p>Play the real table. Every card, turn and win is synced by the server.</p><div className="floating-cards"><img src="/cards/card_reverse_red.png" alt="" /><img src="/cards/card_wild_1.png" alt="" /><img src="/cards/card_draw2_blue.png" alt="" /></div></section>
     <section className="auth-card">
+      {hasInvite && <div className="invite-ready" role="status"><b>Room invite ready</b><span>Sign in or continue as a guest. You will join the room automatically.</span></div>}
       <div className="auth-tabs">{(["guest", "login", "register"] as const).map(item => <button key={item} className={mode === item ? "active" : ""} onClick={() => { setMode(item); setError(""); }}>{item === "guest" ? "Quick play" : item}</button>)}</div>
       <h1>{mode === "guest" ? "Take a seat" : mode === "login" ? "Welcome back" : "Create your player"}</h1>
       <p>{mode === "guest" ? "No account needed. Pick a table name and jump in." : mode === "login" ? "Continue with your registered player." : "Keep your name across games and devices."}</p>
@@ -236,6 +297,7 @@ function LobbyScreen({ userType, rooms, connected, command, onRoom, onRefresh }:
 
 function RoomScreen({ userId, room, connected, command, onRoom, onGame }: { userId: string; room: Room; connected: boolean; command: <T>(event: string, payload?: unknown) => Promise<T>; onRoom: (room: Room | null) => void; onGame: (game: PlayerPrivateGameState | null) => void }) {
   const [busy, setBusy] = useState("");
+  const [shareState, setShareState] = useState("");
   const me = room.players.find(player => player.userId === userId);
   const owner = room.ownerId === userId;
   const act = async (name: string, action: () => Promise<void>) => { setBusy(name); try { await action(); } finally { setBusy(""); } };
@@ -243,8 +305,24 @@ function RoomScreen({ userId, room, connected, command, onRoom, onGame }: { user
   const leave = () => act("leave", async () => { await command<Room | null>(GAME_EVENTS.roomLeave); onRoom(null); });
   const close = () => act("close", async () => { await command<Room>(GAME_EVENTS.roomClose); onRoom(null); });
   const start = () => act("start", async () => onGame(await command<PlayerPrivateGameState>(GAME_EVENTS.gameStart)));
+  const share = async () => {
+    const url = roomInviteUrl(room, window.location.origin);
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: room.name, text: `Join my UNO room: ${room.name}`, url });
+        setShareState("Shared");
+      } else {
+        await navigator.clipboard.writeText(url);
+        setShareState("Link copied");
+      }
+      window.setTimeout(() => setShareState(""), 2_000);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setShareState("Could not copy link");
+    }
+  };
   return <div className="room-wait panel">
-    <div className="room-wait-head"><div><small>{room.visibility.toUpperCase()} ROOM</small><h1>{room.name}</h1><p>{room.code ? <>Invite code <button className="room-code" onClick={() => navigator.clipboard.writeText(room.code!)}>{room.code}</button></> : "Anyone in the public lobby can join."}</p></div><div className={`room-status ${room.status}`}>{room.status.replaceAll("_", " ")}</div></div>
+    <div className="room-wait-head"><div><small>{room.visibility.toUpperCase()} ROOM</small><h1>{room.name}</h1><p>{room.code ? <>Invite code <button className="room-code" onClick={() => navigator.clipboard.writeText(room.code!)}>{room.code}</button></> : "Anyone in the public lobby can join."}</p><div className="room-share-row"><button className="share-room" onClick={share}><span>Share room</span></button>{shareState && <small role="status">{shareState}</small>}</div></div><div className={`room-status ${room.status}`}>{room.status.replaceAll("_", " ")}</div></div>
     <div className="seat-grid">{Array.from({ length: room.configuration.maxPlayers }).map((_, index) => { const player = room.players[index]; return player ? <article key={player.userId} className={`${player.isReady ? "ready" : ""} ${player.status}`}><div className="avatar">{player.displayName.slice(0, 1).toUpperCase()}</div><div><b>{player.displayName}{player.userId === userId ? " (you)" : ""}</b><span>{player.isOwner ? "Host" : player.status === "disconnected" ? "Reconnecting" : player.isReady ? "Ready" : "Not ready"}</span></div>{player.isReady && <i>✓</i>}</article> : <article key={index} className="empty-seat"><div className="avatar">＋</div><span>Waiting for player</span></article>; })}</div>
     <div className="room-actions"><button className={me?.isReady ? "secondary-action" : "primary-action"} disabled={!connected || !!busy} onClick={ready}>{busy === "ready" ? "Saving…" : me?.isReady ? "Not ready" : "I’m ready"}</button>{owner && <button className="start-action" disabled={!connected || !!busy || room.status !== "ready_to_start"} onClick={start}>{busy === "start" ? "Starting…" : "Start game"}</button>}<button className="text-action" disabled={!!busy} onClick={owner ? close : leave}>{owner ? "Close room" : "Leave room"}</button></div>
     <p className="ready-help">All connected players must be ready. The host starts when at least {room.configuration.minPlayers} players are seated.</p>
