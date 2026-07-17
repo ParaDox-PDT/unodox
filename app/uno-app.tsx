@@ -58,8 +58,9 @@ function useDeadlineClock(active: boolean): number {
   return now;
 }
 
-function formatCountdown(deadlineAt: string | null | undefined, now: number): string {
-  const seconds = Math.max(0, Math.ceil(((deadlineAt ? Date.parse(deadlineAt) : now) - now) / 1_000));
+function formatCountdown(deadlineAt: string | null | undefined, now: number, maximumSeconds?: number): string {
+  const remaining = Math.max(0, Math.ceil(((deadlineAt ? Date.parse(deadlineAt) : now) - now) / 1_000));
+  const seconds = maximumSeconds === undefined ? remaining : Math.min(remaining, maximumSeconds);
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
@@ -372,7 +373,7 @@ function RoomScreen({ userId, room, connected, command, onRoom, onGame }: { user
     }
   };
   return <div className="room-wait panel">
-    <div className="room-wait-head"><div><small>{room.visibility.toUpperCase()} ROOM</small><h1>{room.name}</h1><p>{room.code ? <>Invite code <button className="room-code" onClick={() => navigator.clipboard.writeText(room.code!)}>{room.code}</button></> : "Anyone in the public lobby can join."}</p><div className="room-share-row"><button className="share-room" onClick={share}><span>Share room</span></button>{shareState && <small role="status">{shareState}</small>}</div>{waitingAlone && <div className="room-auto-close" role="status"><i /><span>No one joined yet</span><strong>{formatCountdown(room.expiresAt, roomClock)}</strong><small>Room closes automatically</small></div>}</div><div className={`room-status ${room.status}`}>{room.status.replaceAll("_", " ")}</div></div>
+    <div className="room-wait-head"><div><small>{room.visibility.toUpperCase()} ROOM</small><h1>{room.name}</h1><p>{room.code ? <>Invite code <button className="room-code" onClick={() => navigator.clipboard.writeText(room.code!)}>{room.code}</button></> : "Anyone in the public lobby can join."}</p><div className="room-share-row"><button className="share-room" onClick={share}><span>Share room</span></button>{shareState && <small role="status">{shareState}</small>}</div>{waitingAlone && <div className="room-auto-close" role="status"><i /><span>No one joined yet</span><strong>{formatCountdown(room.expiresAt, roomClock, 120)}</strong><small>Room closes automatically</small></div>}</div><div className={`room-status ${room.status}`}>{room.status.replaceAll("_", " ")}</div></div>
     <div className="seat-grid">{Array.from({ length: room.configuration.maxPlayers }).map((_, index) => { const player = room.players[index]; return player ? <article key={player.userId} className={`${player.isReady ? "ready" : ""} ${player.status}`}><div className="avatar">{player.displayName.slice(0, 1).toUpperCase()}</div><div><b>{player.displayName}{player.userId === userId ? " (you)" : ""}</b><span>{player.isOwner ? "Host" : player.status === "disconnected" ? "Reconnecting" : player.isReady ? "Ready" : "Not ready"}</span></div>{player.isReady && <i>✓</i>}</article> : <article key={index} className="empty-seat"><div className="avatar">＋</div><span>Waiting for player</span></article>; })}</div>
     <div className="room-actions"><button className={me?.isReady ? "secondary-action" : "primary-action"} disabled={!connected || !!busy} onClick={ready}>{busy === "ready" ? "Saving…" : me?.isReady ? "Not ready" : "I’m ready"}</button>{owner && <button className="start-action" disabled={!connected || !!busy || room.status !== "ready_to_start"} onClick={start}>{busy === "start" ? "Starting…" : "Start game"}</button>}<button className="text-action" disabled={!!busy} onClick={owner ? close : leave}>{owner ? "Close room" : "Leave room"}</button></div>
     <p className="ready-help">All connected players must be ready. The host starts when at least {room.configuration.minPlayers} players are seated.</p>
@@ -548,7 +549,7 @@ function GameTable({ userId, game, command, onGame, onMainMenu }: { userId: stri
 }
 
 function RemotePlayer({ player, active, effectClass, now }: { player: PlayerPrivateGameState["players"][number]; active: boolean; effectClass: string; now: number }) {
-  return <div className={`remote-player ${active ? "active" : ""} ${player.status} ${effectClass}`}>{player.status === "disconnected" && <div className="disconnect-countdown"><span>OFFLINE</span><strong>{formatCountdown(player.disconnectDeadlineAt, now)}</strong></div>}<div className="player-label"><b>{player.displayName}</b><small>{player.handCount} cards{player.hasCalledUno ? " · UNO!" : ""}</small></div><div className="card-stack">{Array.from({ length: Math.min(player.handCount, 7) }).map((_, index) => <i key={index}><img src="/cards/card.png" alt="" /></i>)}</div></div>;
+  return <div className={`remote-player ${active ? "active" : ""} ${player.status} ${effectClass}`}>{player.status === "disconnected" && <div className="disconnect-countdown"><span>OFFLINE</span><strong>{formatCountdown(player.disconnectDeadlineAt, now, 120)}</strong></div>}<div className="player-label"><b>{player.displayName}</b><small>{player.handCount} cards{player.hasCalledUno ? " · UNO!" : ""}</small></div><div className="card-stack">{Array.from({ length: Math.min(player.handCount, 7) }).map((_, index) => <i key={index}><img src="/cards/card.png" alt="" /></i>)}</div></div>;
 }
 
 function CardFace({ card, className = "", style }: { card: UnoCard; className?: string; style?: CSSProperties }) {
